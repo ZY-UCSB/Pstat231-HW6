@@ -1,0 +1,278 @@
+---
+title: "Pstat231HW6"
+author: "Zihao Yang"
+date: '2022-05-24'
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: inline
+---
+
+
+```{r setup, echo=FALSE}
+library(knitr)
+# set global chunk options: images will be 7x5 inches
+knitr::opts_chunk$set(fig.width=7, fig.height=5)
+options(digits = 8)
+## indents are for indenting r code as formatted text
+## They may need to be adjusted depending on your OS
+# if your output looks odd, increase or decrease indent
+indent1 = '    '
+indent2 = '        '
+indent3 = '            '
+```
+
+```{r echo = F, results = 'hide', message=FALSE}
+#install.packages("tidyverse")
+#install.packages("tidymodels")
+#install.packages("ISLR")
+#install.packages("corrr")
+#install.packages("discrim")
+#install.packages("poissonreg")
+#install.packages("klaR")
+#install.packages("corrplot")
+#install.packages("ggthemes")
+#tinytex::install_tinytex()
+#install.packages("janitor")
+#install.packages("glmnet")
+#install.packages("rpart.plot")
+#install.packages("randomForest")
+#install.packages("ranger")
+#install.packages("vip")
+#install.packages("xgboost")
+library(tinytex)
+library(tidyverse)
+library(tidymodels)
+library(ISLR)
+library(ggplot2)
+library(corrplot)
+library(ggthemes)
+library(yardstick)
+library(dplyr)
+library(magrittr)
+library(corrr)
+library(discrim)
+library(poissonreg)
+library(klaR)
+library(janitor)
+library(glmnet)
+library(rpart.plot)
+library(randomForest)
+library(ranger)
+library(vip)
+library(xgboost)
+tidymodels_prefer()
+set.seed(123)
+```
+### Q1
+```{r}
+# load the data
+pokemon <- read.csv("Pokemon.csv")
+
+#view(pokemon)
+#clean names
+pk <- pokemon %>% clean_names()
+
+#Filter out the rarer Pokémon types and Convert type_1 and legendary to factors
+pk2 <- pk %>%
+  filter(type_1 %in%
+           c("Bug","Fire","Grass","Normal","Water","Psychic"))
+pk2$type_1 <- factor(pk2$type_1)
+pk2$legendary <- factor(pk2$legendary)
+pk2$generation <- factor(pk2$generation)
+
+#Do a initial split
+pk_split <- initial_split(pk2, prop = 0.80,  strata = "type_1")
+pk_train <- training(pk_split)
+pk_test <- testing(pk_split)
+
+#Fold the training set using v-fold cv with v=5
+pk_folds <- vfold_cv(pk_train,v=5,strata = "type_1")
+
+#Set up the recipe
+#Dummy-code legendary and generation;
+#Center and scale all predictors.
+pk_recipe <- recipe(type_1 ~ legendary + generation + 
+                      sp_atk + attack + speed + 
+                      defense + hp + sp_def,
+                    data = pk_train) %>% 
+  step_dummy(c("legendary","generation")) %>% 
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors())
+```
+  
+### Q2
+```{r}
+pk_train %>% 
+  select(where(is.numeric)) %>% 
+  select(-x,-total) %>% 
+  cor() %>% 
+  corrplot(type = "lower",method = "number",diag = FALSE)
+```
+According to the correlation matrix, we can see that the sp_def is correlated with defense. The defense and attack are also correlated. The sp_atk and sp_def are also correlated. Speed are correlated with both attack and sp_atk. They are all make sense to me.
+  
+### Q3
+```{r}
+tree_spec <- decision_tree(cost_complexity = tune()) %>% 
+  set_engine("rpart") %>% 
+  set_mode("classification")
+
+tree_wkflow <- workflow() %>% 
+  add_recipe(pk_recipe) %>% 
+  add_model(tree_spec)
+
+param_grid <- grid_regular(cost_complexity(range = c(-3, -1)), levels = 10)
+
+tune_res <- tune_grid(tree_wkflow,
+                      resamples = pk_folds,
+                      grid = param_grid,
+                      metrics = metric_set(roc_auc))
+autoplot(tune_res)
+```
+The decision tree preforms better with smaller complexity penalties. It has a peak at 0.05, then drop significantly.
+  
+### Q4
+```{r}
+collect_metrics(tune_res) %>% arrange(desc(mean))
+```
+The roc_auc of the best_performing pruned decision tree was 0.66355282.
+  
+### Q5
+```{r warning=FALSE}
+best <- select_best(tune_res)
+
+tree_final <- finalize_workflow(tree_wkflow, best)
+
+tree_fit <- fit(tree_final,pk_train)
+
+tree_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+### Q5
+```{r}
+rf_model <- rand_forest(mtry = tune(),trees = tune(),min_n = tune()) %>% 
+  set_engine("ranger",importance = "impurity") %>% 
+  set_mode("classification")
+
+rf_wkflow <- workflow() %>% 
+  add_recipe(pk_recipe) %>% 
+  add_model(rf_model)
+```
+mtry: the number of predictors that will be randomly sampled when creating the tree models.
+  
+trees: the number of trees contained in the ensemble.
+  
+min_n: the minimum number of data points in a node that are required for the node to be split further.
+  
+```{r}
+rf_grid <- grid_regular(
+  mtry(range = c(1, 8)),
+  trees(range = c(10,1000)),
+  min_n(range = c(1, 10)),
+  levels = 8)
+```
+mtry can't be greater than 8 because it represents the number of predictors and we only have 8 predictors. If mtry = 8, then the model uses all 8 predictors.
+  
+### Q6
+```{r eval=FALSE}
+rf_tune <- tune_grid(
+  rf_wkflow,
+  resamples = pk_folds,
+  grid = rf_grid,
+  metrics = metric_set(roc_auc)
+)
+
+autoplot(rf_tune)
+```
+```{r include=FALSE}
+#save(rf_tune,file = "rf_tune.rda")
+load(file = "rf_tune.rda")
+```
+```{r}
+autoplot(rf_tune)
+```
+ Minimal node size seems to have little effect on the accuracy. In general, more trees yield to high and stable accuracy, especially wher it's larger than 10. And as the number of predictors increasing, the accuracy increase on a large scale.
+  
+### Q7
+```{r}
+collect_metrics(rf_tune) %>% arrange(desc(mean))
+```
+The best model's roc_auc is 0.72505186, with mtry=3, trees=151, and min_n=8.
+  
+### Q8
+```{r}
+rf_final <- finalize_workflow(rf_wkflow,select_best(rf_tune,"roc_auc"))
+
+rf_fit <- fit(rf_final,pk_train)
+
+rf_fit %>% 
+  extract_fit_engine() %>% 
+  vip()
+```
+The most useful variable is sp_atk, and the least useful varible is generation and legendary. Besides, the attack, hp, sp_def, speed, and defense are also quite useful.
+  
+### Q9
+```{r}
+bt_spec <- boost_tree(trees = tune()) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+
+bt_grid <- grid_regular(trees(c(10,2000)), levels = 10)
+
+bt_wkflow <- workflow() %>% 
+  add_model(bt_spec) %>% 
+  add_recipe(pk_recipe)
+
+bt_tune_res <- tune_grid(
+  bt_wkflow,
+  resamples = pk_folds,
+  grid = bt_grid,
+  metrics = metric_set(roc_auc)
+)
+
+autoplot(bt_tune_res)
+```
+The roc_auc increases when number of trees is increasing, and reaches the peak at around 450 trees. Then the roc_auc keeps decreasing as the trees increasing.
+  
+```{r}
+collect_metrics(bt_tune_res) %>% arrange(desc(mean))
+```
+The best_performing boosted tree model's roc_auc is 0.70987274 with 452 trees.
+  
+### Q10
+```{r}
+final_class_model <- augment(tree_fit, new_data = pk_train)
+roc_auc(final_class_model, truth = type_1, .pred_Bug, .pred_Fire, .pred_Grass, .pred_Normal, .pred_Water, .pred_Psychic)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
