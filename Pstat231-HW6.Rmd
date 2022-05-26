@@ -243,9 +243,102 @@ The best_performing boosted tree model's roc_auc is 0.70987274 with 452 trees.
   
 ### Q10
 ```{r}
+bt_final <- finalize_workflow(bt_wkflow,select_best(bt_tune_res,"roc_auc"))
+bt_fit <- fit(bt_final,pk_train)
+
 final_class_model <- augment(tree_fit, new_data = pk_train)
-roc_auc(final_class_model, truth = type_1, .pred_Bug, .pred_Fire, .pred_Grass, .pred_Normal, .pred_Water, .pred_Psychic)
+final_random_forest <- augment(rf_fit, new_data = pk_train)
+final_boosted_tree <- augment(bt_fit, new_data = pk_train)
+
+bind_rows(
+  roc_auc(final_class_model, truth = type_1, .pred_Bug, 
+          .pred_Fire, .pred_Grass, .pred_Normal, .pred_Water, .pred_Psychic),
+  roc_auc(final_random_forest, truth = type_1, .pred_Bug, 
+          .pred_Fire, .pred_Grass, .pred_Normal, .pred_Water, .pred_Psychic),
+  roc_auc(final_boosted_tree, truth = type_1, .pred_Bug, 
+          .pred_Fire, .pred_Grass, .pred_Normal, .pred_Water, .pred_Psychic))
+
+
+
 ```
+From the output, we can see that the best model is boosted tree model with roc_auc of 0.79992047.
+  
+```{r}
+final_boosted_tree_test <- augment(bt_fit, new_data = pk_test)
+roc_auc(final_boosted_tree_test, truth = type_1, .pred_Bug, 
+        .pred_Fire, .pred_Grass, .pred_Normal, .pred_Water, .pred_Psychic)
+```
+The roc_auc on the test data set is 0.66969006.
+  
+```{r}
+autoplot(roc_curve(final_boosted_tree_test, truth = type_1, .pred_Bug, 
+        .pred_Fire, .pred_Grass, .pred_Normal, .pred_Water, .pred_Psychic))
+
+conf_mat(final_boosted_tree_test, truth = type_1, estimate = .pred_class) %>% 
+  autoplot(type = "heatmap")
+```
+The model is most accurate at predicting Normal, Fire, and Bug, and worst at predicting Water, Psychic, and Grass.
+  
+### Q11
+```{r}
+abalone <- read.csv("abalone.csv")
+abalone["age"] <- abalone["rings"]+1.5
+abalone_split <- initial_split(abalone,prop=0.80,strata = age)
+abalone_train <- training(abalone_split)
+abalone_test <- testing(abalone_split)
+abalone_folds <- vfold_cv(abalone_train, v = 5, strata = age)
+abtrain_wo_rings <- abalone_train %>% select(-rings)
+abalone_recipe <- recipe(age ~ ., data = abtrain_wo_rings) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_interact(terms= ~ starts_with("type"):shucked_weight+
+                  longest_shell:diameter+
+                  shucked_weight:shell_weight) %>% 
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors())
+```
+```{r}
+abalone_rf <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>% 
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("regression")
+
+abalone_wkflow <- workflow() %>% 
+  add_recipe(abalone_recipe) %>% 
+  add_model(abalone_rf)
+
+abalone_grid <- grid_regular(
+  mtry(range = c(1,8)),
+  trees(range = c(10,1000)),
+  min_n(range = c(1,10)),
+  levels = 8
+)
+```
+```{r eval=FALSE}
+abalone_tune <- tune_grid(
+  abalone_wkflow,
+  resamples = abalone_folds,
+  grid = abalone_grid,
+  metrics = metric_set(rmse)
+)
+```
+```{r include=FALSE}
+#save(abalone_tune, file = "abalone_tune.rda")
+load(file = "abalone_tune.rda")
+```
+```{r}
+autoplot(abalone_tune)
+```
+```{r}
+abalone_final <- finalize_workflow(abalone_wkflow,select_best(abalone_tune))
+abalone_fit <- fit(abalone_final, abalone_train)
+```
+```{r}
+augment(abalone_fit, new_data = abalone_test) %>% 
+  rmse(truth = age, estimate = .pred)
+```
+The model's RMSE on the testing set is 2.1321725.
+
+
+
 
 
 
